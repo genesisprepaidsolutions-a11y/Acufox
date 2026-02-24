@@ -1,64 +1,109 @@
-
+# app.py
 import streamlit as st
-import pandas as pd
 import psycopg2
-import plotly.express as px
+import pandas as pd
+from psycopg2.extras import RealDictCursor
 
-st.set_page_config(page_title="Aquaflow Enterprise Dashboard", layout="wide")
+st.set_page_config(page_title="AcuFox Multi-Meter Dashboard", layout="wide")
 
+# ================================
+# Database connection
+# ================================
 def get_connection():
-    return psycopg2.connect(
-        host=st.secrets["DB_HOST"],
-        database=st.secrets["DB_NAME"],
-        user=st.secrets["DB_USER"],
-        password=st.secrets["DB_PASSWORD"],
-        port=st.secrets.get("DB_PORT", 5432)
-    )
+    try:
+        conn = psycopg2.connect(
+            host=st.secrets["postgres"]["DB_HOST"],
+            database=st.secrets["postgres"]["DB_NAME"],
+            user=st.secrets["postgres"]["DB_USER"],
+            password=st.secrets["postgres"]["DB_PASSWORD"],
+            port=st.secrets["postgres"].get("DB_PORT", 5432),
+            sslmode="require"  # Use SSL if your DB requires it
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Database connection failed: {e}")
+        st.stop()
 
-@st.cache_data(ttl=60)
+# ================================
+# Load devices with caching
+# ================================
+@st.cache_data(ttl=300)
 def load_devices():
     conn = get_connection()
-    df = pd.read_sql("SELECT device_id FROM devices ORDER BY device_id", conn)
-    conn.close()
-    return df
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT device_id, name, location, status FROM devices ORDER BY name;")
+            devices = cur.fetchall()
+            return pd.DataFrame(devices)
+    finally:
+        conn.close()
 
-@st.cache_data(ttl=60)
-def load_messages(device_id):
+# ================================
+# Load data for a specific device
+# ================================
+@st.cache_data(ttl=300)
+def load_device_data(device_id):
     conn = get_connection()
-    df = pd.read_sql(
-        "SELECT timestamp, volume_m3, battery_percent, leak_flag, tamper_flag FROM messages WHERE device_id=%s ORDER BY timestamp",
-        conn,
-        params=(device_id,)
-    )
-    conn.close()
-    return df
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT timestamp, volume_m3, battery_percent, leak_flag, tamper_flag
+                FROM readings
+                WHERE device_id = %s
+                ORDER BY timestamp DESC
+                LIMIT 1000
+            """, (device_id,))
+            data = cur.fetchall()
+            return pd.DataFrame(data)
+    finally:
+        conn.close()
 
-st.title("Aquaflow Enterprise Fleet Dashboard")
+# ================================
+# Sidebar: Select device
+# ================================
+st.sidebar.title("AcuFox Devices")
+devices_df = load_devices()
+device_options = devices_df["name"].tolist()
+selected_device_name = st.sidebar.selectbox("Select Device", device_options)
+selected_device = devices_df[devices_df["name"] == selected_device_name].iloc[0]
+device_id = selected_device["device_id"]
 
-devices = load_devices()
+# ================================
+# Main dashboard
+# ================================
+st.title(f"Device Dashboard: {selected_device_name}")
 
-if len(devices) == 0:
-    st.warning("No devices found in database")
-    st.stop()
+data_df = load_device_data(device_id)
 
-device_id = st.selectbox("Select Device", devices["device_id"])
+if data_df.empty:
+    st.warning("No data available for this device.")
+else:
+    # Volume in m³
+    st.metric("Latest Volume (m³)", f"{data_df.iloc[0]['volume_m3']:.2f}")
+    
+    # Battery %
+    st.metric("Battery %", f"{data_df.iloc[0]['battery_percent']:.0f}%")
+    
+    # Leak/Tamper flags
+    leak_flag = "⚠️ Leak Detected" if data_df.iloc[0]['leak_flag'] else "No Leak"
+    tamper_flag = "⚠️ Tamper Detected" if data_df.iloc[0]['tamper_flag'] else "No Tamper"
+    st.write(f"Leak Status: {leak_flag}")
+    st.write(f"Tamper Status: {tamper_flag}")
+    
+    # Display last 20 readings
+    st.subheader("Recent Readings")
+    st.dataframe(data_df.head(20))
+    
+    # Optional: chart
+    st.subheader("Volume over Time")
+    st.line_chart(data_df.set_index("timestamp")["volume_m3"])
 
-df = load_messages(device_id)
+# ================================
+# Auto Sigfox API integration (placeholder)
+# ================================
+st.subheader("Sigfox API")
+st.info("Sigfox API integration would automatically fetch live readings here.")
 
-if len(df) == 0:
-    st.warning("No messages for selected device")
-    st.stop()
-
-latest = df.iloc[-1]
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Latest Volume (m³)", f"{latest.volume_m3:.2f}")
-col2.metric("Battery (%)", f"{latest.battery_percent:.1f}")
-col3.metric("Leak", "YES" if latest.leak_flag else "NO")
-col4.metric("Tamper", "YES" if latest.tamper_flag else "NO")
-
-fig = px.line(df, x="timestamp", y="volume_m3", title="Volume Trend")
-st.plotly_chart(fig, use_container_width=True)
-
-st.dataframe(df)
+# ================================
+# End of app.py
+# ================================
