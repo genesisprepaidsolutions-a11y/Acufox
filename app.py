@@ -12,10 +12,10 @@ st.set_page_config(page_title="AcuFox Multi-Meter Dashboard", layout="wide")
 def get_connection():
     try:
         conn = psycopg2.connect(
-            host=st.secrets["postgres"]["DB_HOST"],
-            database=st.secrets["postgres"]["DB_NAME"],
-            user=st.secrets["postgres"]["DB_USER"],
-            password=st.secrets["postgres"]["DB_PASSWORD"],
+            host=st.secrets["postgres"]["db.uxtddangntejpwaovnmv.supabase.co"],
+            database=st.secrets["postgres"]["postgres"],
+            user=st.secrets["postgres"]["postgres"],
+            password=st.secrets["postgres"]["@db.uxtddangntejpwaovnmv.supabase.co:5432/postgres"],
             port=st.secrets["postgres"].get("DB_PORT", 5432),
             sslmode="require"  # Use SSL if your DB requires it
         )
