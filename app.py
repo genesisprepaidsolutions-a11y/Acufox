@@ -15,7 +15,7 @@ def get_connection():
             host=st.secrets["postgres"]["db.uxtddangntejpwaovnmv.supabase.co"],
             database=st.secrets["postgres"]["postgres"],
             user=st.secrets["postgres"]["postgres"],
-            password=st.secrets["postgres"]["@db.uxtddangntejpwaovnmv.supabase.co:5432/postgres"],
+            password=st.secrets["postgres"]["Acucomm@2808"],
             port=st.secrets["postgres"].get("DB_PORT", 5432),
             sslmode="require"  # Use SSL if your DB requires it
         )
