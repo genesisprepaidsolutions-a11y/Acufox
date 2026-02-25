@@ -18,7 +18,7 @@ st.set_page_config(
 # SUPABASE SESSION POOLER (Transaction Mode)
 # ==========================================================
 # Replace <YOUR_PASSWORD> with your actual DB password
-DB_HOST = "postgresql://postgres:Acucomm2808@db.uxtddangntejpwaovnmv.supabase.co:5432/postgres"  # From Supabase Pooler
+DB_HOST = "postgresql://postgres.uxtddangntejpwaovnmv:Acucomm2808@aws-1-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true"  # From Supabase Pooler
 DB_PORT = 6543  # Pooler port
 DB_NAME = "postgres"
 DB_USER = "postgres"
