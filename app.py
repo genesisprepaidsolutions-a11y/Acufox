@@ -24,15 +24,16 @@ DB_PASSWORD = "Acucomm2808"
 # CONNECTION
 # =====================================================
 
-@st.cache_resource
 def get_conn():
+
     return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        sslmode="require"
+        host="aws-1-eu-central-1.pooler.supabase.com",
+        port=6543,
+        database="postgres",
+        user="postgres.uxtddangntejpwaovnmv",
+        password="Acucomm2808",
+        sslmode="require",
+        connect_timeout=10
     )
 
 
@@ -122,14 +123,18 @@ def load_devices():
 
     conn = get_conn()
 
-    df = pd.read_sql(
-        "SELECT device_id FROM devices ORDER BY device_id",
-        conn
-    )
+    try:
 
-    conn.close()
+        df = pd.read_sql(
+            "SELECT device_id FROM devices ORDER BY device_id",
+            conn
+        )
 
-    return df
+        return df
+
+    finally:
+
+        conn.close()
 
 
 # =====================================================
@@ -141,21 +146,25 @@ def load_readings(device):
 
     conn = get_conn()
 
-    df = pd.read_sql(
-        """
-        SELECT *
-        FROM readings
-        WHERE device_id=%s
-        ORDER BY timestamp DESC
-        LIMIT 500
-        """,
-        conn,
-        params=(device,)
-    )
+    try:
 
-    conn.close()
+        df = pd.read_sql(
+            """
+            SELECT *
+            FROM readings
+            WHERE device_id=%s
+            ORDER BY timestamp DESC
+            LIMIT 500
+            """,
+            conn,
+            params=(device,)
+        )
 
-    return df
+        return df
+
+    finally:
+
+        conn.close()
 
 
 # =====================================================
