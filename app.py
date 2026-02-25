@@ -15,26 +15,21 @@ st.set_page_config(
 )
 
 # ==========================================================
-# SUPABASE CONNECTION POOLER (PgBouncer)
+# SUPABASE CONNECTION POOLER (PgBouncer – transaction mode)
 # ==========================================================
-# IMPORTANT:
-# Supabase → Settings → Database → Connection Pooling
-# Mode: TRANSACTION
-# Port: 6543
-
 DB_HOST = "aws-0-eu-west-1.pooler.supabase.com"
-DB_HOSTADDR = "104.18.32.30"  # Force IPv4
-DB_PORT = 6543               # Pooler port
+DB_HOSTADDR = "104.18.32.30"   # Force IPv4
+DB_PORT = 6543
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASSWORD = "Acucomm@2808"
 
 # ==========================================================
-# Database connection (pooler-safe)
+# Database connection
 # ==========================================================
 def get_connection():
     try:
-        conn = psycopg2.connect(
+        return psycopg2.connect(
             host=DB_HOST,
             hostaddr=DB_HOSTADDR,
             port=DB_PORT,
@@ -44,30 +39,24 @@ def get_connection():
             sslmode="require",
             connect_timeout=10
         )
-        return conn
     except Exception as e:
         st.error(f"❌ Database connection failed:\n\n{e}")
         st.stop()
 
 # ==========================================================
-# SIGFOX PAYLOAD DECODER (example)
+# Sigfox payload decoder
 # ==========================================================
 def decode_sigfox_payload(hex_payload: str):
     """
-    Example payload structure (you can adjust):
-    Bytes:
-    0-1  : volume (uint16) → divide by 100
-    2    : battery %
-    3    : flags bitmask
-           bit0 = leak
-           bit1 = tamper
+    Payload example:
+    bytes 0-1 : volume (uint16, /100)
+    byte 2    : battery %
+    byte 3    : flags (bit0=leak, bit1=tamper)
     """
     try:
         raw = binascii.unhexlify(hex_payload)
 
-        volume_raw = int.from_bytes(raw[0:2], "big")
-        volume_m3 = volume_raw / 100.0
-
+        volume_m3 = int.from_bytes(raw[0:2], "big") / 100.0
         battery_percent = raw[2]
 
         flags = raw[3]
@@ -75,20 +64,13 @@ def decode_sigfox_payload(hex_payload: str):
         tamper_flag = bool(flags & 0b00000010)
 
         return volume_m3, battery_percent, leak_flag, tamper_flag
-
     except Exception:
         return None, None, None, None
 
 # ==========================================================
-# SIGFOX INGESTION ENDPOINT
+# Sigfox ingestion handler
 # ==========================================================
 def handle_sigfox_callback(params):
-    """
-    Sigfox will POST/GET parameters like:
-    device
-    data
-    time
-    """
     device_id = params.get("device")
     payload = params.get("data")
     ts = params.get("time")
@@ -96,12 +78,15 @@ def handle_sigfox_callback(params):
     if not device_id or not payload:
         return "Missing parameters", 400
 
-    volume_m3, battery, leak, tamper = decode_sigfox_payload(payload)
+    volume, battery, leak, tamper = decode_sigfox_payload(payload)
 
-    if volume_m3 is None:
+    if volume is None:
         return "Invalid payload", 400
 
-    timestamp = datetime.utcfromtimestamp(int(ts)) if ts else datetime.utcnow()
+    timestamp = (
+        datetime.utcfromtimestamp(int(ts))
+        if ts else datetime.utcnow()
+    )
 
     conn = get_connection()
     try:
@@ -114,11 +99,12 @@ def handle_sigfox_callback(params):
                     battery_percent,
                     leak_flag,
                     tamper_flag
-                ) VALUES (%s, %s, %s, %s, %s, %s);
+                )
+                VALUES (%s, %s, %s, %s, %s, %s);
             """, (
                 device_id,
                 timestamp,
-                volume_m3,
+                volume,
                 battery,
                 leak,
                 tamper
@@ -130,17 +116,17 @@ def handle_sigfox_callback(params):
     return "OK", 200
 
 # ==========================================================
-# Handle Sigfox calls BEFORE UI loads
+# Handle Sigfox callback BEFORE UI renders
 # ==========================================================
-query_params = st.experimental_get_query_params()
+query_params = st.query_params
 
 if "sigfox" in query_params:
-    message, status = handle_sigfox_callback(query_params)
-    st.write(message)
+    msg, status = handle_sigfox_callback(query_params)
+    st.write(msg)
     st.stop()
 
 # ==========================================================
-# Load devices (cached)
+# Cached data loaders
 # ==========================================================
 @st.cache_data(ttl=300)
 def load_devices():
@@ -156,9 +142,6 @@ def load_devices():
     finally:
         conn.close()
 
-# ==========================================================
-# Load device data (cached)
-# ==========================================================
 @st.cache_data(ttl=300)
 def load_device_data(device_id):
     conn = get_connection()
@@ -216,12 +199,8 @@ else:
     col1.metric("Latest Volume (m³)", f"{latest['volume_m3']:.2f}")
     col2.metric("Battery %", f"{latest['battery_percent']:.0f}%")
 
-    st.write(
-        f"💧 Leak: {'⚠️ YES' if latest['leak_flag'] else '✅ NO'}"
-    )
-    st.write(
-        f"🔐 Tamper: {'⚠️ YES' if latest['tamper_flag'] else '✅ NO'}"
-    )
+    st.write(f"💧 Leak: {'⚠️ YES' if latest['leak_flag'] else '✅ NO'}")
+    st.write(f"🔐 Tamper: {'⚠️ YES' if latest['tamper_flag'] else '✅ NO'}")
 
     st.subheader("📋 Recent Readings")
     st.dataframe(data_df.head(20), use_container_width=True)
@@ -233,5 +212,5 @@ else:
     )
 
 # ==========================================================
-# End
+# End of file
 # ==========================================================
