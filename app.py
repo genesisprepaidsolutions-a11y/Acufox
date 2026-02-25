@@ -1,263 +1,204 @@
-# app.py
 import streamlit as st
 import psycopg2
 import pandas as pd
-from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import binascii
 
-# ==========================================================
-# Streamlit config
-# ==========================================================
+# =====================================================
+# CONFIG
+# =====================================================
+
 st.set_page_config(
-    page_title="AcuFox Multi-Meter Dashboard",
+    page_title="AcuFox Dashboard",
     layout="wide"
 )
 
-# ==========================================================
-# SUPABASE SESSION POOLER (CORRECT SETTINGS)
-# ==========================================================
 DB_HOST = "aws-1-eu-central-1.pooler.supabase.com"
 DB_PORT = 6543
 DB_NAME = "postgres"
 DB_USER = "postgres.uxtddangntejpwaovnmv"
-DB_PASSWORD = "Acucomm2808"   # <-- your actual Supabase password
+DB_PASSWORD = "Acucomm2808"
 
-# ==========================================================
-# Database connection
-# ==========================================================
+
+# =====================================================
+# CONNECTION
+# =====================================================
+
 @st.cache_resource
-def get_connection():
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            sslmode="require",
-            connect_timeout=15
-        )
-        return conn
-    except Exception as e:
-        st.error(f"❌ Database connection failed:\n\n{e}")
-        st.stop()
-
-# ==========================================================
-# Sigfox payload decoder
-# ==========================================================
-def decode_sigfox_payload(hex_payload: str):
-
-    try:
-        raw = binascii.unhexlify(hex_payload)
-
-        volume_m3 = int.from_bytes(raw[0:2], "big") / 100.0
-        battery_percent = raw[2]
-        flags = raw[3]
-
-        leak_flag = bool(flags & 1)
-        tamper_flag = bool(flags & 2)
-
-        return volume_m3, battery_percent, leak_flag, tamper_flag
-
-    except Exception:
-        return None, None, None, None
+def get_conn():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        sslmode="require"
+    )
 
 
-# ==========================================================
-# Sigfox ingestion handler
-# ==========================================================
-def handle_sigfox_callback(params):
+# =====================================================
+# SIGFOX DECODER
+# =====================================================
 
-    device_id = params.get("device")
+def decode_payload(payload):
+
+    raw = binascii.unhexlify(payload)
+
+    volume = int.from_bytes(raw[0:2], "big") / 100
+    battery = raw[2]
+    flags = raw[3]
+
+    leak = bool(flags & 1)
+    tamper = bool(flags & 2)
+
+    return volume, battery, leak, tamper
+
+
+# =====================================================
+# SIGFOX INGESTION
+# =====================================================
+
+def handle_sigfox():
+
+    params = st.query_params
+
+    if "device" not in params:
+        return False
+
+    device = params["device"]
     payload = params.get("data")
     ts = params.get("time")
 
-    if not device_id or not payload:
-        return "Missing parameters", 400
+    if payload is None:
+        return True
 
-    volume, battery, leak, tamper = decode_sigfox_payload(payload)
+    volume, battery, leak, tamper = decode_payload(payload)
 
-    if volume is None:
-        return "Invalid payload", 400
+    timestamp = (
+        datetime.utcfromtimestamp(int(ts))
+        if ts else datetime.utcnow()
+    )
 
-    timestamp = datetime.utcfromtimestamp(int(ts)) if ts else datetime.utcnow()
+    conn = get_conn()
 
-    conn = get_connection()
+    with conn.cursor() as cur:
 
-    try:
-        with conn.cursor() as cur:
-
-            cur.execute("""
-                INSERT INTO readings (
-                    device_id,
-                    timestamp,
-                    volume_m3,
-                    battery_percent,
-                    leak_flag,
-                    tamper_flag
-                )
-                VALUES (%s, %s, %s, %s, %s, %s);
-            """, (
-                device_id,
+        cur.execute(
+            """
+            SELECT insert_sigfox_reading(
+                %s,%s,%s,%s,%s,%s
+            )
+            """,
+            (
+                device,
                 timestamp,
                 volume,
                 battery,
                 leak,
                 tamper
-            ))
+            )
+        )
 
-            conn.commit()
+        conn.commit()
 
-    finally:
-        conn.close()
+    conn.close()
 
-    return "OK", 200
+    st.write("OK")
+
+    return True
 
 
-# ==========================================================
-# Handle Sigfox callback BEFORE UI
-# ==========================================================
-query_params = st.query_params
-
-if "sigfox" in query_params:
-
-    msg, _ = handle_sigfox_callback(query_params)
-
-    st.write(msg)
-
+# Run ingestion
+if handle_sigfox():
     st.stop()
 
 
-# ==========================================================
-# Load devices
-# ==========================================================
-@st.cache_data(ttl=300)
+# =====================================================
+# LOAD DEVICES
+# =====================================================
+
+@st.cache_data(ttl=60)
 def load_devices():
 
-    conn = get_connection()
+    conn = get_conn()
 
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    df = pd.read_sql(
+        "SELECT device_id FROM devices ORDER BY device_id",
+        conn
+    )
 
-            cur.execute("""
-                SELECT
-                    device_id,
-                    name,
-                    location,
-                    status
-                FROM devices
-                ORDER BY name;
-            """)
+    conn.close()
 
-            return pd.DataFrame(cur.fetchall())
-
-    finally:
-        conn.close()
+    return df
 
 
-# ==========================================================
-# Load readings
-# ==========================================================
-@st.cache_data(ttl=300)
-def load_device_data(device_id):
+# =====================================================
+# LOAD READINGS
+# =====================================================
 
-    conn = get_connection()
+@st.cache_data(ttl=60)
+def load_readings(device):
 
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    conn = get_conn()
 
-            cur.execute("""
-                SELECT
-                    timestamp,
-                    volume_m3,
-                    battery_percent,
-                    leak_flag,
-                    tamper_flag
-                FROM readings
-                WHERE device_id = %s
-                ORDER BY timestamp DESC
-                LIMIT 1000;
-            """, (device_id,))
+    df = pd.read_sql(
+        """
+        SELECT *
+        FROM readings
+        WHERE device_id=%s
+        ORDER BY timestamp DESC
+        LIMIT 500
+        """,
+        conn,
+        params=(device,)
+    )
 
-            return pd.DataFrame(cur.fetchall())
+    conn.close()
 
-    finally:
-        conn.close()
+    return df
 
 
-# ==========================================================
-# Sidebar
-# ==========================================================
-st.sidebar.title("AcuFox Devices")
+# =====================================================
+# UI
+# =====================================================
 
-devices_df = load_devices()
+st.sidebar.title("Devices")
 
-if devices_df.empty:
+devices = load_devices()
 
-    st.error("❌ No devices found.")
-
+if devices.empty:
+    st.warning("Waiting for Sigfox data...")
     st.stop()
 
-
-selected_name = st.sidebar.selectbox(
+device = st.sidebar.selectbox(
     "Select Device",
-    devices_df["name"].tolist()
+    devices["device_id"]
 )
 
-device_id = devices_df.loc[
-    devices_df["name"] == selected_name,
-    "device_id"
-].iloc[0]
+st.title(f"AcuFox Dashboard — {device}")
 
+data = load_readings(device)
 
-# ==========================================================
-# Dashboard
-# ==========================================================
-st.title(f"📟 Device Dashboard: {selected_name}")
+if data.empty:
+    st.warning("No readings yet")
+    st.stop()
 
-data_df = load_device_data(device_id)
+latest = data.iloc[0]
 
+col1, col2, col3 = st.columns(3)
 
-if data_df.empty:
+col1.metric("Volume (m³)", round(latest.volume_m3, 2))
+col2.metric("Battery (%)", latest.battery_percent)
+col3.metric("Leak", "YES" if latest.leak_flag else "NO")
 
-    st.warning("⚠️ No readings yet.")
+st.subheader("Volume History")
 
-else:
+chart = data.sort_values("timestamp")
 
-    latest = data_df.iloc[0]
+st.line_chart(
+    chart.set_index("timestamp")["volume_m3"]
+)
 
-    col1, col2 = st.columns(2)
+st.subheader("Recent Readings")
 
-    col1.metric(
-        "Latest Volume (m³)",
-        f"{latest['volume_m3']:.2f}"
-    )
-
-    col2.metric(
-        "Battery %",
-        f"{latest['battery_percent']:.0f}%"
-    )
-
-    st.write(
-        f"💧 Leak: {'⚠️ YES' if latest['leak_flag'] else '✅ NO'}"
-    )
-
-    st.write(
-        f"🔐 Tamper: {'⚠️ YES' if latest['tamper_flag'] else '✅ NO'}"
-    )
-
-    st.subheader("📋 Recent Readings")
-
-    st.dataframe(
-        data_df.head(20),
-        use_container_width=True
-    )
-
-    st.subheader("📈 Volume Over Time")
-
-    chart_df = data_df.sort_values("timestamp")
-
-    st.line_chart(
-        chart_df.set_index("timestamp")["volume_m3"]
-    )
+st.dataframe(data, use_container_width=True)
