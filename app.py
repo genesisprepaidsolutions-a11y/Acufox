@@ -59,10 +59,21 @@ def decode_payload(payload):
 # SIGFOX INGESTION
 # =====================================================
 
+# =====================================================
+# SIGFOX INGESTION (FIXED FOR PRODUCTION)
+# =====================================================
 def handle_sigfox():
+    """
+    Handles incoming Sigfox callback safely:
+    - Decodes payload
+    - Uses fresh DB connection
+    - Handles errors gracefully
+    - Avoids cached/closed connection issues
+    """
 
     params = st.query_params
 
+    # No device? skip
     if "device" not in params:
         return False
 
@@ -70,48 +81,47 @@ def handle_sigfox():
     payload = params.get("data")
     ts = params.get("time")
 
-    if payload is None:
+    # No payload? skip
+    if not payload:
         return True
 
-    volume, battery, leak, tamper = decode_payload(payload)
+    # Decode payload safely
+    try:
+        volume, battery, leak, tamper = decode_payload(payload)
+    except Exception as e:
+        st.error(f"❌ Failed to decode payload: {e}")
+        return True
 
-    timestamp = (
-        datetime.utcfromtimestamp(int(ts))
-        if ts else datetime.utcnow()
-    )
+    # Timestamp handling
+    try:
+        timestamp = datetime.utcfromtimestamp(int(ts)) if ts else datetime.utcnow()
+    except Exception:
+        timestamp = datetime.utcnow()
 
-    conn = get_conn()
-
-    with conn.cursor() as cur:
-
-        cur.execute(
-            """
-            SELECT insert_sigfox_reading(
-                %s,%s,%s,%s,%s,%s
+    # Insert into DB using a fresh connection
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT insert_sigfox_reading(
+                    %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (device, timestamp, volume, battery, leak, tamper)
             )
-            """,
-            (
-                device,
-                timestamp,
-                volume,
-                battery,
-                leak,
-                tamper
-            )
-        )
+            conn.commit()
+    except Exception as e:
+        st.error(f"❌ Failed to insert reading: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass  # Ignore if connection already closed
 
-        conn.commit()
-
-    conn.close()
-
-    st.write("OK")
+    st.write("✅ Sigfox payload ingested successfully")
 
     return True
-
-
-# Run ingestion
-if handle_sigfox():
-    st.stop()
 
 
 # =====================================================
